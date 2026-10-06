@@ -1,5 +1,10 @@
 # Join in
 
+Before your first commit, install Gitleaks 8.30.1+ and run
+`python3 scripts/install-git-hooks.py`. The local pre-commit and full-history
+pre-push checks help catch secrets before upload. Setup, exact coverage and
+existing-hook integration are in the [development guide](docs/development.md).
+
 This is a small hobby project. Useful contributions include another board's
 dedicated button mapping, a better small-screen interaction, or a reproducible
 Linux installation fix. Open an issue with your OS, display size, audio stack,

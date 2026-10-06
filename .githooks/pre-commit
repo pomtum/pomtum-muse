@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+if command -v python >/dev/null 2>&1; then runtime=python; else runtime=python3; fi
+exec "$runtime" scripts/check-publication.py --with-gitleaks

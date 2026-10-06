@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Modified by PomTum contributors: explicit local-only listener by default.
 
 # Example unit for examples/pebble_ring_bridge.py. Run it as an account in
 # the musegadget socket's group (the account musegadget runs commands as).
@@ -25,6 +26,10 @@ User=@USER@
 Environment=PEBBLE_SESSION_ID=@SESSION_ID@
 Environment=PEBBLE_SECRET_FILE=/etc/pebble-bridge/secret
 Environment=PEBBLE_PORT=8787
+# Remote access is opt-in: change PEBBLE_HOST to a LAN address or 0.0.0.0.
+# The shared token is still required. Plain HTTP needs a trusted network or
+# protected transport; restrict access to the selected port/address.
+Environment=PEBBLE_HOST=127.0.0.1
 ExecStart=/usr/bin/python3 /opt/pebble-bridge/pebble_ring_bridge.py
 Restart=always
 RestartSec=3

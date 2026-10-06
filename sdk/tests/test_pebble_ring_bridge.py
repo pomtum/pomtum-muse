@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Modified by PomTum contributors: listener, privacy and bounded-request checks.
 
 from __future__ import annotations
 
@@ -18,6 +19,9 @@ import json
 import socket
 import sys
 import threading
+import subprocess
+import logging
+from types import SimpleNamespace
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -114,3 +118,113 @@ def test_bad_content_length_gets_a_400(server):
                      b"Content-Type: application/json\r\nX-Pebble-Token: s3\r\n\r\n")
         status_line = sock.makefile("rb").readline()
     assert status_line.split()[1] == b"400" and sent == []
+
+
+@pytest.mark.parametrize("host", [None, "0.0.0.0", "192.0.2.10"])
+def test_listener_defaults_to_loopback_and_lan_requires_explicit_environment(monkeypatch, tmp_path, caplog, host):
+    secret = "private-example-token"
+    session = "private-example-side-chat"
+    secret_file = tmp_path / "secret"
+    secret_file.write_text(secret)
+    monkeypatch.setenv("PEBBLE_SECRET_FILE", str(secret_file))
+    monkeypatch.setenv("PEBBLE_SESSION_ID", session)
+    monkeypatch.setenv("PEBBLE_PORT", "8787")
+    if host is None:
+        monkeypatch.delenv("PEBBLE_HOST", raising=False)
+    else:
+        monkeypatch.setenv("PEBBLE_HOST", host)
+    bound = []
+    monkeypatch.setattr(bridge, "ThreadingHTTPServer", lambda address, handler:
+                        (bound.append(address) or SimpleNamespace(serve_forever=lambda: None)))
+    with caplog.at_level(logging.INFO, logger=bridge.log.name):
+        bridge.main()
+    assert bound == [(host or "127.0.0.1", 8787)]
+    assert secret not in caplog.text and session not in caplog.text
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_sender_discards_command_output_and_never_returns_session_or_transcript(monkeypatch, caplog, returncode):
+    session = "private-example-side-chat"
+    transcript = "private example transcript"
+    secret = "private-example-token"
+    monkeypatch.setenv("PEBBLE_SESSION_ID", session)
+    calls = []
+
+    def run(command, **options):
+        calls.append((command, options))
+        return SimpleNamespace(returncode=returncode, stdout=secret + transcript, stderr=session)
+
+    monkeypatch.setattr(bridge.subprocess, "run", run)
+    ok, detail = bridge.send_user_msg(transcript)
+    assert ok is (returncode == 0)
+    command, options = calls[0]
+    assert command[-1] == "-" and transcript not in command
+    assert options["input"] == transcript
+    assert options["stdout"] == subprocess.DEVNULL and options["stderr"] == subprocess.DEVNULL
+    for private in (session, transcript, secret):
+        assert private not in detail + caplog.text
+
+
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_sender_exception_messages_and_timeout_command_are_not_exposed(monkeypatch, caplog, timed_out):
+    session = "private-example-side-chat"
+    private = "private-example-token-and-transcript"
+    monkeypatch.setenv("PEBBLE_SESSION_ID", session)
+
+    def run(command, **options):
+        if timed_out:
+            raise subprocess.TimeoutExpired(command, 1, output=private, stderr=private)
+        raise OSError(private)
+
+    monkeypatch.setattr(bridge.subprocess, "run", run)
+    ok, detail = bridge.send_user_msg(private)
+    assert not ok and detail == ("sender timed out" if timed_out else "sender could not start")
+    assert private not in detail + caplog.text and session not in detail + caplog.text
+
+
+def test_http_failure_and_debug_access_logs_hide_private_details(server, monkeypatch, caplog):
+    url, sent = server
+    private = "private-example-session-token-transcript"
+    monkeypatch.setattr(bridge, "send_user_msg", lambda text: (False, private))
+    request = urllib.request.Request(url + "/ingest?" + private,
+        data=b'{"text":"private example transcription"}', headers={
+            "Content-Type": "application/json", "X-Pebble-Token": "s3"}, method="POST")
+    with caplog.at_level(logging.DEBUG, logger=bridge.log.name):
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+    body = json.loads(error.value.read())
+    assert error.value.code == 502 and body == {"ok": False, "detail": "sender rejected message"}
+    assert private not in json.dumps(body) + caplog.text
+    assert "private example transcription" not in caplog.text and sent == []
+
+
+@pytest.mark.parametrize("length", ["-1", "", "1048577"])
+def test_negative_missing_and_oversized_body_lengths_are_bounded(server, length):
+    url, sent = server
+    host, port = urllib.parse.urlsplit(url).netloc.split(":")
+    header = f"Content-Length: {length}\r\n" if length else ""
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(("POST /ingest HTTP/1.1\r\nHost: x\r\n" + header + "\r\n").encode())
+        status_line = sock.makefile("rb").readline()
+    assert status_line.split()[1] == (b"413" if length == "1048577" else b"400") and sent == []
+
+
+def test_incomplete_and_stalled_body_never_reach_sender(server, monkeypatch):
+    url, sent = server
+    monkeypatch.setattr(bridge, "READ_TIMEOUT_S", 0.1)
+    host, port = urllib.parse.urlsplit(url).netloc.split(":")
+    for close_write in (True, False):
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            sock.sendall(b"POST /ingest HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\n"
+                         b"Content-Type: application/json\r\nX-Pebble-Token: s3\r\n\r\n{}")
+            if close_write:
+                sock.shutdown(socket.SHUT_WR)
+            status_line = sock.makefile("rb").readline()
+        assert status_line.split()[1] == (b"400" if close_write else b"408")
+    assert sent == []
+
+
+def test_transfer_encoded_requests_are_rejected_before_body_read(server):
+    url, sent = server
+    status, body = post(url, b"", {"Transfer-Encoding": "chunked"})
+    assert status == 400 and body["error"] == "unsupported transfer encoding" and sent == []

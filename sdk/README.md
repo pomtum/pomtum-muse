@@ -38,6 +38,8 @@ command.
 - **Raspberry Pi OS Bullseye or later**, Debian 11 or later, or Ubuntu 22.04
   or later, already on your network. 32-bit and 64-bit both work.
 - **An account with sudo** on the machine.
+- **Python 3 already installed** for bounded, private SDK token input before
+  the installer performs system changes.
 - **An SDK token** from [gadgets.muse.ai](https://gadgets.muse.ai/settings/sdk-tokens)
   (Account > SDK tokens). Every gadget needs one to pair, including ones you
   build for yourself. Read the [Gadget SDK Terms](https://gadgets.muse.ai/sdk-terms)
@@ -123,8 +125,12 @@ A few other ways to build on it:
   [The upstream development guide](https://github.com/facebookincubator/muse-gadget-sdk/blob/b139b45064b4dcecf7bfe97e75bc7f99c10c28b6/linux/AGENTS.md) walks through it.
 - **Change the account.** `bash install.sh --run-as someone` gives Muse a
   different account, such as one without sudo.
-- **Change the SDK token.** `bash install.sh --sdk-token mgst_…` replaces it.
-  It's saved in `/var/lib/musegadget/sdk_token`, readable only by root.
+- **Change the SDK token.** Use the companion Settings token field, or rerun
+  `bash install.sh --from "$PWD"` from this SDK directory for hidden input.
+  Automation may use `--sdk-token-file PATH` with an owner-only regular file,
+  or `--sdk-token-file -` with redirected token-only stdin. Token values in
+  command arguments are rejected. The token is saved in
+  `/var/lib/musegadget/sdk_token`, readable only by root.
 
 ## Manage it
 

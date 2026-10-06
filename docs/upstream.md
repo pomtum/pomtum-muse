@@ -22,7 +22,12 @@ Changes by PomTum contributors:
   status and no automatic resend after a lost ACK.
 - `pyproject.toml`: bridge entry point. Corresponding chat, identity, HTTP and
   service tests cover the additions; the remaining upstream tests are retained.
-- SDK docs are adjusted to this repository; the original installer is retained.
+- `install.sh` and CLI guidance: credentials use hidden prompting or private
+  file/stdin input; token values in command-line arguments are rejected.
+- Pebble example: loopback by default, explicit `PEBBLE_HOST` for LAN use,
+  categorical errors, no raw session/command-output logs and bounded HTTP reads.
+- SDK docs are adjusted to this repository. Modified upstream files retain
+  their original copyright and identify the changes.
 
 The independent `device-io/` sidecar and `ui/` implement physical-key audio,
 optional local speech, animation and transient main-screen captions. Those

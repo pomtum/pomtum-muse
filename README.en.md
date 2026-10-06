@@ -49,6 +49,8 @@ Paste your token at the installer's hidden prompt. Keep it out of command-line a
 sudo musegadget pair
 ```
 
+Automation may use `--sdk-token-file /path/to/private-token-file` (owner-only permissions, such as mode `600`) or `--sdk-token-file -` with redirected token-only stdin ending at EOF. Stdin cannot simultaneously supply the installer through `curl | bash`. The old `--sdk-token VALUE` option is removed.
+
 Once the SDK and companion bridge are running, add or replace a token from **Settings → SDK 令牌 → 保存** (the UI currently uses Chinese). Tap the second page dot or swipe left to open Settings. Saving preserves the current connection and does not initiate pairing; unpaired devices still need the phone flow above.
 
 ### 3. Generate local character assets and build
@@ -136,3 +138,8 @@ The physical-key flow, real cloud replies, animations and caption cleanup were c
 No personal SDK token, pairing state, chat history, device logs or speech models are included. Code is [Apache-2.0](LICENSE) with original notices retained; character artwork and voice models have separate terms. See [THIRD_PARTY.md](THIRD_PARTY.md). This project is not affiliated with or endorsed by Meta / Muse.
 
 Contributions and additional hardware reports: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Before contributing, install Gitleaks and run `python3 scripts/install-git-hooks.py`
+to enable pre-commit and full-history pre-push checks. GitHub Secret Scanning and
+Push Protection are also enabled on the official repository. CI runs after upload
+and does not replace these earlier checks; see [development](docs/development.md#before-committing-or-pushing).

@@ -1,5 +1,36 @@
 # Source change log
 
+## CHG-20261007-002
+
+- Date: 2026-10-07 00:55 Asia/Shanghai.
+- Commit: resolved by the `Wiki-Entry: CHG-20261007-002` Git trailer.
+- Title: `fix: prevent credential exposure before publication and during setup`.
+- Purpose: resolve operational hardening findings after the initial public
+  review. No real credential leak was found in the initial public history.
+- Changes: remove installer token-value arguments and unsafe CLI guidance;
+  support hidden TTY and owner-only file/stdin input with bounded validation and
+  root-only atomic storage. Default the optional Pebble example to loopback,
+  remove raw session/output logging and bound request reads. Add local Git
+  hooks, staged-byte and full-history Gitleaks checks, a pinned verified CI CLI,
+  and exact-value exceptions for documented upstream synthetic vectors only.
+- Validation: Linux SDK 256 passed / 1 root-user permission test skipped;
+  14 isolated token-input/storage tests passed, including hidden terminal echo,
+  no argv/environment transport, owner repair and atomic failure preservation.
+  Eight publication regression tests passed on Windows and Linux, including a
+  real rejected push to a disposable local bare repository and a secret deleted
+  from HEAD but retained in old commits. Existing I/O/installer checks are run
+  by CI. Shell syntax, diff checks and staged/full-history secret checks passed.
+- Remote controls: GitHub Secret Scanning and Push Protection enabled on this
+  repository; these cover supported patterns and complement the local Muse rule.
+- Compatibility/risks: `--sdk-token VALUE` is deliberately removed; migrate
+  automation to `--sdk-token-file PATH` or redirected stdin. Pebble LAN users
+  must explicitly set `PEBBLE_HOST` and provide a protected network/transport.
+  Hooks must be enabled per clone and can be bypassed; scans are not a guarantee
+  that every possible secret is detectable. No real device was changed.
+- Rollback: review and revert affected source changes if necessary; no stored
+  credentials, cloud account or existing public Git history was rewritten.
+- Image update: none.
+
 ## CHG-20261007-001
 
 - Date: 2026-10-07 00:16 Asia/Shanghai.

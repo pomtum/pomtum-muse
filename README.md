@@ -47,6 +47,8 @@ bash sdk/install.sh --from "$PWD/sdk" --run-as "$USER"
 
 在安装器的隐藏输入提示中粘贴自己的令牌。不要把令牌放在命令行参数、截图、Issue 或 Git 文件里。安装器会安装 SDK 服务并打开 BLE 配对；在手机 **Add Device** 中选择终端显示的设备，网络页面选择 **Use current connection**。
 
+自动化安装可使用 `--sdk-token-file /路径/私有令牌文件`；文件需仅限所有者访问，例如权限 `600`。也可用 `--sdk-token-file -` 从重定向的标准输入读取到 EOF；此时标准输入只能放令牌，不能同时用于 `curl | bash` 传入脚本。旧的 `--sdk-token VALUE` 用法已移除。
+
 需要再次打开配对时：
 
 ```sh
@@ -143,3 +145,5 @@ sudo systemctl restart musegadget.service
 仓库提供 SDK 源码及修改、前端、按键 / 音频适配、安装 / 卸载脚本和测试。**不包含我们的 SDK 令牌、配对文件、聊天记录、设备日志或语音模型。** 代码采用 [Apache-2.0](LICENSE)，原作者版权保留；角色和语音模型有各自的权利边界，见 [THIRD_PARTY.md](THIRD_PARTY.md)。项目与 Meta / Muse 无隶属或背书关系。
 
 想贡献其他 Linux 设备的适配？请带上系统版本、输入设备映射和可复现步骤，见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+贡献代码前先安装 Gitleaks 并运行 `python3 scripts/install-git-hooks.py`，启用提交前及推送前检查。推送前会扫描完整本地 Git 历史；仓库也已开启 GitHub Secret Scanning / Push Protection。CI 在上传后运行，不能代替这些前置检查，详见[开发指南](docs/development.md#before-committing-or-pushing)。

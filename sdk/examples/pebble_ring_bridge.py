@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Modified by PomTum contributors: loopback default and private bounded failures.
 
 """Forward Pebble ring transcriptions to a Muse side chat.
 
@@ -24,10 +25,16 @@ Configuration (environment):
   PEBBLE_SESSION_ID   side chat to post into (required)
   PEBBLE_SECRET_FILE  file holding the shared secret (default /etc/pebble-bridge/secret)
   PEBBLE_PORT         port to listen on (default 8787)
+  PEBBLE_HOST         bind address (default 127.0.0.1)
   MUSEGADGET          path to the musegadget command
 
 Standard library only; run it with the system Python as an account in the
 musegadget socket's group.
+
+Remote companion apps cannot reach the loopback default. Explicitly setting
+PEBBLE_HOST to a LAN address (or 0.0.0.0) opts into remote access. Shared-token
+authentication still applies, but this example serves plain HTTP: use a trusted
+network or a protected transport and limit who can reach the chosen listener.
 """
 
 from __future__ import annotations
@@ -46,6 +53,9 @@ log = logging.getLogger("pebble-ring-bridge")
 MAX_BODY_BYTES = 1024 * 1024
 TEXT_FIELDS = ("transcription", "text", "transcript")
 SEND_TIMEOUT_S = 100
+READ_TIMEOUT_S = 10
+SEND_FAILURES = frozenset({"side chat not configured", "sender could not start",
+                           "sender timed out", "sender rejected message"})
 
 
 def parse_body(content_type: str, raw: bytes) -> dict:
@@ -83,18 +93,28 @@ def presented_token(headers, fields: dict) -> str:
 
 
 def send_user_msg(text: str) -> tuple[bool, str]:
+    session_id = os.environ.get("PEBBLE_SESSION_ID")
+    if not session_id:
+        return False, "side chat not configured"
     command = [os.environ.get("MUSEGADGET", "/opt/musegadget/venv/bin/musegadget"),
-               "send-user-msg", "--session-id", os.environ["PEBBLE_SESSION_ID"], "-"]
+               "send-user-msg", "--session-id", session_id, "-"]
     try:
-        result = subprocess.run(command, input=text, text=True, capture_output=True,
+        result = subprocess.run(command, input=text, text=True,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 timeout=SEND_TIMEOUT_S)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, str(exc)
-    return result.returncode == 0, (result.stdout or result.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return False, "sender timed out"
+    except OSError:
+        return False, "sender could not start"
+    return (True, "Sent to your Muse.") if result.returncode == 0 else (False, "sender rejected message")
 
 
 class Handler(BaseHTTPRequestHandler):
     secret = ""
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(READ_TIMEOUT_S)
 
     def do_GET(self):
         if self.path.split("?", 1)[0] == "/health":
@@ -105,14 +125,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.split("?", 1)[0] != "/ingest":
             return self._reply(404, {"ok": False, "error": "not found"})
+        if self.headers.get("Transfer-Encoding"):
+            return self._reply(400, {"ok": False, "error": "unsupported transfer encoding"})
         try:
-            length = int(self.headers.get("Content-Length") or 0)
+            length = int(self.headers.get("Content-Length", ""))
         except ValueError:
+            return self._reply(400, {"ok": False, "error": "bad content length"})
+        if length < 0:
             return self._reply(400, {"ok": False, "error": "bad content length"})
         if length > MAX_BODY_BYTES:
             return self._reply(413, {"ok": False, "error": "body too large"})
         try:
-            fields = parse_body(self.headers.get("Content-Type", ""), self.rfile.read(length))
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                return self._reply(400, {"ok": False, "error": "incomplete body"})
+            fields = parse_body(self.headers.get("Content-Type", ""), raw)
+        except TimeoutError:
+            return self._reply(408, {"ok": False, "error": "request body timed out"})
         except (ValueError, UnicodeDecodeError):
             return self._reply(400, {"ok": False, "error": "unreadable body"})
         # Compared as bytes: compare_digest() raises on non-ASCII str input.
@@ -123,7 +152,9 @@ class Handler(BaseHTTPRequestHandler):
         if not text:
             return self._reply(400, {"ok": False, "error": "no text"})
         delivered, detail = send_user_msg(f"{text} [via Pebble Ring]")
-        log.info("transcription (%d chars) %s", len(text), "delivered" if delivered else f"failed: {detail}")
+        detail = "Sent to your Muse." if delivered else (
+            detail if isinstance(detail, str) and detail in SEND_FAILURES else "sender rejected message")
+        log.info("transcription %s", "delivered" if delivered else f"failed: {detail}")
         self._reply(200 if delivered else 502, {"ok": delivered, "detail": detail})
 
     def _reply(self, status: int, body: dict) -> None:
@@ -132,22 +163,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            self.close_connection = True
 
     def log_message(self, fmt, *args):
-        log.debug("%s %s", self.address_string(), fmt % args)
+        pass  # Request paths/queries can contain tokens or other private values.
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    os.environ["PEBBLE_SESSION_ID"]  # fail fast if unset
+    if not os.environ.get("PEBBLE_SESSION_ID"):
+        raise SystemExit("PEBBLE_SESSION_ID is required")
     with open(os.environ.get("PEBBLE_SECRET_FILE", "/etc/pebble-bridge/secret")) as f:
         Handler.secret = f.read().strip()
     if not Handler.secret:
         raise SystemExit("empty secret")
     port = int(os.environ.get("PEBBLE_PORT", "8787"))
-    log.info("listening on :%d, posting to side chat %s", port, os.environ["PEBBLE_SESSION_ID"])
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    host = os.environ.get("PEBBLE_HOST") or "127.0.0.1"
+    log.info("listening on %s:%d; side chat configured", host, port)
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
 if __name__ == "__main__":

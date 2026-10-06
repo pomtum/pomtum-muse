@@ -14,6 +14,17 @@ See the repository [home page](../README.md) for installation, pairing and usage
 ## Host checks
 
 Run on Linux (WSL also works); tests use temporary state and synthetic credentials.
+Install [Gitleaks 8.30.1 or newer](https://github.com/gitleaks/gitleaks/releases),
+then enable this checkout's hooks before editing:
+
+```sh
+gitleaks version
+python3 scripts/install-git-hooks.py
+```
+
+The setup changes only this repository's `core.hooksPath`. It refuses to replace
+another configured hook directory or existing pre-commit/pre-push hooks. If you
+already use hooks, integrate the commands below into that setup.
 
 ```sh
 python3 -m venv .venv
@@ -26,7 +37,7 @@ bash -n scripts/uninstall-companion.sh
 python3 scripts/prepare-avatar.py
 python3 ui/tools/avatar-verify.py
 (cd ui && npm ci && npm run build && npm audit --audit-level=moderate)
-python3 scripts/check-publication.py
+python3 scripts/check-publication.py --history
 git diff --check
 ```
 
@@ -48,6 +59,37 @@ the token, writes a temporary file with mode 0600, fsyncs and replaces its norma
 credential file. It returns only saved/pairing-required status; it never returns
 the token, fragments, or length. No logging, browser persistence or automatic
 re-pairing is added. Initial installation uses the official hidden prompt.
+
+## Before committing or pushing
+
+The **pre-commit** hook checks actual staged bytes, not the working-tree copy,
+then runs Gitleaks against staged changes. The **pre-push** hook additionally
+scans full local reachable history, including tags, detached HEAD and the exact
+object IDs Git is about to push. A secret deleted from the latest file can still
+block a push because it remains in an earlier commit. A shallow clone is rejected
+until `git fetch --unshallow --tags` completes. Missing or failed Gitleaks blocks
+the check; diagnostic output contains paths/rules/line numbers, never token text.
+
+```sh
+# The hooks run these automatically once enabled in this clone:
+python3 scripts/check-publication.py --with-gitleaks  # staged content
+python3 scripts/check-publication.py --history        # staged + full history
+```
+
+Gitleaks retains its default provider/generic rules and adds Muse's `mgst_`
+format. Allowlisting is restricted to exact, documented public test-vector
+values in their original file and a Python type annotation. No whole test
+directory, file, or commit is exempted. `gitleaks:allow` comments and an external
+ignore file do not silently exempt additional findings in this wrapper.
+
+GitHub Secret Scanning and Push Protection are enabled for the official
+repository. Their supported provider patterns complement the local Muse rule.
+CI fetches full history and repeats the checks, using a pinned SHA-256-verified
+Gitleaks release. **CI is after upload**, so it does not replace local hooks or
+server-side protection. Git does not automatically enable hooks in a new clone;
+each contributor needs the setup command above. Local hooks remain bypassable,
+and neither pattern scanning nor these controls guarantee detection of every
+possible secret. Review staged files before publishing.
 
 ## Device acceptance
 

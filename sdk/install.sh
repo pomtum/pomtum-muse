@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Stop inherited tracing/export modes before arguments or token input are handled.
+# A hostile shell startup file runs before this script and is outside this boundary.
+set +x +v +a
+trap - DEBUG RETURN ERR
+unset BASH_ENV ENV SDK_TOKEN MUSEGADGET_SDK_TOKEN
+# Modified by PomTum contributors: private token input and atomic credential save.
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +22,7 @@
 # Install the Linux Device SDK.
 #
 #   curl -fsSL <url>/install.sh | bash
-#   bash install.sh [--from SOURCE] [--run-as USER] [--sdk-token TOKEN] [--yes] [--no-pair]
+#   bash install.sh [--from SOURCE] [--run-as USER] [--sdk-token-file PATH] [--yes] [--no-pair]
 #   bash install.sh --uninstall [--purge]
 #
 # Installs system packages, a pinned uv, and musegadget into /opt/musegadget;
@@ -48,9 +54,12 @@ Usage: install.sh [options]
                     wheel, or a pip/uv URL. Default: $DEFAULT_SOURCE
   --run-as USER     Account whose permissions your Muse's commands run with.
                     Default: the account running this installer.
-  --sdk-token TOKEN Your mgst_ SDK token from gadgets.muse.ai. If omitted, an
-                    interactive install prompts securely. Saved, readable
-                    only by root, in $STATE_DIR/sdk_token.
+  --sdk-token-file PATH
+                    Read a token from an owner-only regular file, or from
+                    redirected stdin when PATH is -. Never pass a token value
+                    as an argument or environment variable. If omitted, an
+                    interactive install prompts with hidden terminal input.
+                    Saved root-only in $STATE_DIR/sdk_token.
   --yes             Don't ask for confirmation.
   --no-pair         Install without opening Bluetooth pairing.
   --uninstall       Remove musegadget. Keeps the device identity and pairing
@@ -286,29 +295,124 @@ EOF
     esac
 }
 
+# Only the validated token is returned on captured stdout. Paths/errors are not echoed.
+read_sdk_token() {
+    local mode="$1" path="${2:-}"
+    command -v python3 >/dev/null || die "Python 3 is required for secure SDK token input."
+    SDK_TOKEN="$(python3 -c '
+import os, re, stat, sys
+
+def reject():
+    print("SDK token input rejected; use a private token file or the hidden terminal prompt.", file=sys.stderr)
+    raise SystemExit(1)
+
+def bounded(stream):
+    data = stream.read(257)
+    if len(data) > 256:
+        reject()
+    return data
+
+try:
+    mode, path = sys.argv[1:]
+    if mode == "prompt":
+        import termios
+        try:
+            fd = os.open("/dev/tty", os.O_RDWR | os.O_CLOEXEC)
+        except OSError:
+            sys.exit(0)  # Preserve noninteractive keep/skip behavior.
+        settings = termios.tcgetattr(fd)
+        hidden = list(settings)
+        hidden[3] &= ~termios.ECHO
+        data = bytearray()
+        oversized = False
+        try:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, hidden)
+            os.write(fd, b"Muse SDK token (input hidden, Enter to keep/skip): ")
+            while True:
+                char = os.read(fd, 1)
+                if not char or char in (b"\n", b"\r"):
+                    break
+                if len(data) < 256:
+                    data += char
+                else:
+                    oversized = True  # Drain the rest with echo still disabled.
+        finally:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, settings)
+            os.write(fd, b"\n")
+            os.close(fd)
+        if oversized:
+            reject()
+        data = bytes(data)
+        if not data:
+            sys.exit(0)
+    elif path == "-":
+        if sys.stdin.isatty():
+            reject()  # A token typed here would be echoed; use the hidden prompt.
+        data = bounded(sys.stdin.buffer)
+    else:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+                reject()
+            data = bounded(source)
+    if not re.fullmatch(rb"mgst_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?:\r?\n)?", data):
+        reject()
+    sys.stdout.write(data.rstrip(b"\r\n").decode("ascii"))
+except (OSError, ValueError, KeyboardInterrupt):
+    reject()
+' "$mode" "$path")" || die "Could not read a valid SDK token; no token was saved."
+}
+
 save_sdk_token() {
     if [ -z "$SDK_TOKEN" ]; then
         if ! as_root test -s "$STATE_DIR/sdk_token"; then
-            say "No SDK token yet. Get one at gadgets.muse.ai and rerun with --sdk-token; gadgets without one will stop pairing."
+            say "No SDK token yet. Get one at gadgets.muse.ai and rerun interactively, or use --sdk-token-file PATH; gadgets without one will stop pairing."
         fi
         return 0
     fi
     say "Saving your SDK token"
-    as_root install -d -m 0700 "$STATE_DIR"
-    printf '%s\n' "$SDK_TOKEN" | as_root install -m 0600 /dev/stdin "$STATE_DIR/sdk_token"
+    # stdin is the only transport for the token; no argv or environment value.
+    printf '%s\n' "$SDK_TOKEN" | as_root python3 -c '
+import os, re, sys, tempfile
+temporary = None
+try:
+    data = sys.stdin.buffer.read(257)
+    if not re.fullmatch(rb"mgst_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]\n", data):
+        raise ValueError()
+    directory = sys.argv[1]
+    if os.path.islink(directory):
+        raise ValueError()
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.chown(directory, 0, 0)
+    os.chmod(directory, 0o700)
+    fd, temporary = tempfile.mkstemp(prefix=".sdk_token-", dir=directory)
+    with os.fdopen(fd, "wb") as target:
+        os.fchown(target.fileno(), 0, 0)
+        os.fchmod(target.fileno(), 0o600)
+        target.write(data)
+        target.flush()
+        os.fsync(target.fileno())
+    os.replace(temporary, os.path.join(directory, "sdk_token"))
+    temporary = None
+except (OSError, ValueError):
+    print("Could not save SDK token securely; the previous token was preserved.", file=sys.stderr)
+    sys.exit(1)
+finally:
+    if temporary is not None:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+' "$STATE_DIR" || die "SDK token save failed."
+    SDK_TOKEN=""
 }
 
 prompt_sdk_token() {
-    if [ -n "$SDK_TOKEN" ] || [ "$NO_PAIR" = 1 ] || [ "$ASSUME_YES" = 1 ]; then
+    if [ -n "$SDK_TOKEN_FILE" ] || [ "$NO_PAIR" = 1 ] || [ "$ASSUME_YES" = 1 ]; then
         return 0
     fi
-    [ -r /dev/tty ] || return 0
-    printf 'Muse SDK token (mgst_...; input hidden, Enter to keep/skip): ' >/dev/tty
-    IFS= read -r -s SDK_TOKEN </dev/tty || SDK_TOKEN=""
-    printf '\n' >/dev/tty
-    if [ -n "$SDK_TOKEN" ] && ! [[ "$SDK_TOKEN" =~ ^mgst_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]]; then
-        die "that SDK token is not valid; copy it again from gadgets.muse.ai."
-    fi
+    read_sdk_token prompt
 }
 
 install_service() {
@@ -382,20 +486,28 @@ uninstall() {
 }
 
 main() {
-    SOURCE="$DEFAULT_SOURCE" RUN_AS="" SDK_TOKEN="" ASSUME_YES=0 NO_PAIR=0 UNINSTALL=0 PURGE=0
+    local SDK_TOKEN="" SDK_TOKEN_FILE=""
+    SOURCE="$DEFAULT_SOURCE" RUN_AS="" ASSUME_YES=0 NO_PAIR=0 UNINSTALL=0 PURGE=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --from) SOURCE="${2:?--from needs a value}"; shift 2 ;;
             --run-as) RUN_AS="${2:?--run-as needs a value}"; shift 2 ;;
-            --sdk-token) SDK_TOKEN="${2:?--sdk-token needs a value}"; shift 2 ;;
+            --sdk-token|--sdk-token=*) die "--sdk-token was removed. Use the hidden interactive prompt or --sdk-token-file PATH; never pass the token value on the command line." ;;
+            --sdk-token-file)
+                [ $# -ge 2 ] && [ -n "$2" ] || die "--sdk-token-file needs a file path or -."
+                [ -z "$SDK_TOKEN_FILE" ] || die "provide --sdk-token-file only once."
+                SDK_TOKEN_FILE="$2"; shift 2 ;;
             --yes|-y) ASSUME_YES=1; shift ;;
             --no-pair) NO_PAIR=1; shift ;;
             --uninstall) UNINSTALL=1; shift ;;
             --purge) PURGE=1; shift ;;
             -h|--help) usage; exit 0 ;;
-            *) usage >&2; die "unknown option: $1" ;;
+            *) usage >&2; die "unknown option; see --help." ;;
         esac
     done
+    if [ "$UNINSTALL" = 0 ] && [ -n "$SDK_TOKEN_FILE" ]; then
+        read_sdk_token file "$SDK_TOKEN_FILE"
+    fi
     if [ "$(id -u)" -ne 0 ]; then
         command -v sudo >/dev/null || die "run this as root, or install sudo."
         sudo true || die "this installer needs sudo."
@@ -405,9 +517,6 @@ main() {
 
     check_system
     prompt_sdk_token
-    if [ -n "$SDK_TOKEN" ] && ! [[ "$SDK_TOKEN" =~ ^mgst_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]]; then
-        die "that SDK token is not valid; copy it again from gadgets.muse.ai."
-    fi
     choose_account
     install_packages
     enable_bluez

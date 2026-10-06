@@ -1,3 +1,4 @@
+# Modified by PomTum contributors: direct users to private SDK token input.
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -82,7 +83,9 @@ def cmd_pair(args: argparse.Namespace) -> int:
         return 1
     if not sdk_token:
         print("No SDK token yet. Get one at gadgets.muse.ai and run "
-              "`bash install.sh --sdk-token mgst_…`; gadgets without one will stop pairing.",
+              "`bash install.sh` for hidden input, or use `--sdk-token-file PATH` with a private file; "
+              "never put the token value in command arguments or environment variables. "
+              "Gadgets without one will stop pairing.",
               file=sys.stderr)
     ident = identity.load_or_create()
     pairing = PairingSession(

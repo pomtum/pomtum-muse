@@ -1,0 +1,19 @@
+PomTum Muse
+Copyright 2026 PomTum contributors.
+
+Includes a modified copy of the Linux Muse Gadget SDK:
+Copyright (c) Meta Platforms, Inc. and affiliates.
+Source: https://github.com/facebookincubator/muse-gadget-sdk
+Base commit: b139b45064b4dcecf7bfe97e75bc7f99c10c28b6
+Licensed under Apache-2.0. Original notices are preserved.
+Changes are recorded in docs/upstream.md.
+
+Jollybot character artwork, its original C renderer, generated character
+frames, and third-party voice models are not included in the source license
+or redistributed as runtime assets in this repository. The optional local
+preparation tool retrieves the renderer from its official source. See
+THIRD_PARTY.md. The demonstration screenshot depicts Meta's character;
+its inclusion does not grant a license to the character artwork.
+
+Muse, Meta and their marks belong to their respective owners.
+This is an independent community experiment, not an official Meta product.

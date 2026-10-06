@@ -1,0 +1,43 @@
+name: Checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: SDK and local I/O tests
+        run: |
+          python -m pip install -e './sdk[test]'
+          (cd sdk && python -m pytest -q)
+          python -B -m unittest discover -s device-io/tests -v
+          python -B -m unittest discover -s scripts/tests -v
+          bash -n scripts/install-companion.sh
+          bash -n scripts/uninstall-companion.sh
+      - name: Build local artwork and compare with original C
+        run: |
+          python scripts/prepare-avatar.py
+          python ui/tools/avatar-verify.py
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+          npm audit --audit-level=moderate
+      - name: Check published source
+        run: |
+          python scripts/check-publication.py
+          git diff --check
+          test -z "$(git status --porcelain)"
+      # Character assets are local generated test inputs; do not upload artifacts.
